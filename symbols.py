@@ -92,6 +92,15 @@ CLEF_VALUE_TO_GLYPH: dict[str, str] = {
     "fb4": "FClefChange",
 }
 
+# Interval index 1..5 → ambitus suffix (matches squarize AMBITUS).
+AMBITUS_SUFFIX: dict[int, str] = {
+    1: "One",
+    2: "Two",
+    3: "Three",
+    4: "Four",
+    5: "Five",
+}
+
 # Logical neume name → Gregorio glyph name (basic set; names from gregorio squarize).
 NEUME_NAME_TO_GLYPH: dict[str, str] = {
     "punctum": "Punctum",
@@ -171,19 +180,50 @@ class Neumes:
         painter: QPainter,
         dest_rect: QRect,
         neume_name: str,
+        intervals: list[int] | None = None,
     ) -> bool:
         """
         Draw the neume glyph for neume_name into dest_rect.
+        If intervals is provided (1 or 2 ints in 1..5), try ambitus-suffixed glyph names
+        (e.g. FlexusOne, ScandicusOneOne) before falling back to base name. Climacus has
+        no font glyph and returns False.
         Returns True if drawn, False if fallback should be used.
         """
         if self._family is None or not self._name_to_unicode:
+            #print(f"[symbols.draw] no font/map -> False")
             return False
         key = (neume_name or "punctum").strip().lower()
-        glyph_name = NEUME_NAME_TO_GLYPH.get(key)
-        if glyph_name is None:
+        if key == "climacus":
+            #print(f"[symbols.draw] shape=climacus (no glyph) -> False")
             return False
+        base_glyph = NEUME_NAME_TO_GLYPH.get(key)
+        if base_glyph is None:
+            #print(f"[symbols.draw] shape={key!r} no base_glyph -> False")
+            return False
+        glyph_name: str | None = None
+        candidate_tried: str | None = None
+        if intervals:
+            clamped = [
+                max(1, min(5, i)) for i in intervals[:2]
+            ]
+            suffixes = [AMBITUS_SUFFIX.get(i, "One") for i in clamped]
+            if len(suffixes) == 1:
+                candidate_tried = base_glyph + suffixes[0]
+                if self._name_to_unicode.get(candidate_tried) is not None:
+                    glyph_name = candidate_tried
+                elif self._name_to_unicode.get(candidate_tried + "Nothing") is not None:
+                    glyph_name = candidate_tried + "Nothing"
+            elif len(suffixes) >= 2:
+                candidate_tried = base_glyph + suffixes[0] + suffixes[1]
+                if self._name_to_unicode.get(candidate_tried) is not None:
+                    glyph_name = candidate_tried
+                elif self._name_to_unicode.get(candidate_tried + "Nothing") is not None:
+                    glyph_name = candidate_tried + "Nothing"
+        if glyph_name is None:
+            glyph_name = base_glyph
         codepoint = self._name_to_unicode.get(glyph_name)
         if codepoint is None:
+            #print(f"[symbols.draw] shape={key} intervals={intervals} base={base_glyph} candidate_tried={candidate_tried} final={glyph_name!r} -> not in font, False")
             return False
         font = QFont(self._family)
         font.setPixelSize(max(dest_rect.height(), 1))

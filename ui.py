@@ -10,16 +10,18 @@ import PyQt6.QtGui as QtGui
 from symbols import Clefs, Neumes
 
 
-# Vertical grid: more slots = smaller slot_height = staff lines closer together.
-NUM_PITCH_SLOTS = 27
+# Vertical grid: more slots = smaller slot_height = staff lines closer together (match font’s implicit staff spacing).
+NUM_PITCH_SLOTS = 48
 # Top staff line at this slot; staff centered in window. 4 lines -> slots (12,14,16,18).
-STAFF_TOP_SLOT = 18
+STAFF_TOP_SLOT = 24
+# Reduce spacing between staff lines by this many pixels total (neume/clef sizes stay based on unreduced span).
+STAFF_LINE_SPACING_REDUCTION_PX = 32
 # Nudge clef up so the C hole sits on the line (font glyph center vs visual center).
-CLEF_NUDGE_UP_PX = 18
+CLEF_NUDGE_UP_PX = 10
 # Nudge font-rendered neumes up so they center like the fallback dots (font glyph vs visual center).
-NEUME_NUDGE_UP_PX = 32
+NEUME_NUDGE_UP_PX = 4
 # Shift neumes down so they sit on the staff (reference: aveverum.svg has neumes in staff range).
-NEUME_SLOT_OFFSET = -7
+NEUME_SLOT_OFFSET = -6
 
 
 class StaffWidget(QtWidgets.QWidget):
@@ -132,7 +134,10 @@ class StaffWidget(QtWidgets.QWidget):
 
     def _draw_staff(self, painter: QtGui.QPainter, rect: QtCore.QRect):
         """Draw staff lines at fixed slots so the staff is always centered in the window."""
-        slot_height = rect.height() / NUM_PITCH_SLOTS
+        slot_height_base = rect.height() / NUM_PITCH_SLOTS
+        staff_slots = self._staff_line_slots()
+        staff_span_slots = max(2, (staff_slots[-1] - staff_slots[0]) if staff_slots else 2)
+        slot_height = slot_height_base - (STAFF_LINE_SPACING_REDUCTION_PX / staff_span_slots)
         def slot_to_y(slot: int) -> float:
             return rect.bottom() - (slot + 0.5) * slot_height
 
@@ -161,14 +166,17 @@ class StaffWidget(QtWidgets.QWidget):
     def _draw_elements(self, painter: QtGui.QPainter, rect: QtCore.QRect):
         """Draw clef, bars, and syllables. All positions referenced to clef; staff fixed in center."""
         elements = getattr(self._display, "elements", [])
-        slot_height = rect.height() / NUM_PITCH_SLOTS
+        slot_height_base = rect.height() / NUM_PITCH_SLOTS
+        staff_span_slots = max(2, (self._staff_line_slots()[-1] - self._staff_line_slots()[0]) if self._staff_line_slots() else 2)
+        # Tighter line spacing: use reduced slot_height for positions (and staff lines in _draw_staff)
+        slot_height = slot_height_base - (STAFF_LINE_SPACING_REDUCTION_PX / staff_span_slots)
+        # Neume/clef size from unreduced span so glyphs stay the same size
+        staff_span_px_for_glyphs = staff_span_slots * slot_height_base
+        neume_height = max(40, int(staff_span_px_for_glyphs * 0.65))
+        clef_height = max(40, int(staff_span_px_for_glyphs * 1.1))
+
         clef_pitch = getattr(self._display, "clef_pitch", 2) if self._display else 2
         staff_slots = self._staff_line_slots()
-        # Scale glyphs to fixed staff span (staff always same size in center)
-        staff_span_slots = max(2, (staff_slots[-1] - staff_slots[0]) if staff_slots else 2)
-        staff_span_px = staff_span_slots * slot_height
-        neume_height = max(40, int(staff_span_px * 0.65))
-        clef_height = max(40, int(staff_span_px * 1.1))
 
         def slot_to_y(slot: int) -> float:
             return rect.bottom() - (slot + 0.5) * slot_height
@@ -230,9 +238,11 @@ class StaffWidget(QtWidgets.QWidget):
                             nw,
                             nh,
                         )
-                        if self._neumes.draw(painter, dest_rect, shape):
+                        intervals_arg = neume.get("intervals")
+                        if self._neumes.draw(painter, dest_rect, shape, intervals=intervals_arg):
                             x += nw
                         else:
+                            print(f"[ui] fallback dots shape={shape!r} intervals={intervals_arg} pitches={pits}")
                             for p in pits:
                                 py = pitch_to_y(p)
                                 painter.setBrush(QtCore.Qt.GlobalColor.black)

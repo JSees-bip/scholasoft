@@ -15,6 +15,10 @@ from gabc_parser import GabcDocument, Clef, Bar, Syllable
 # GABC pitch letters a–m map to staff positions 0–12 (a=0, m=12).
 _PITCH_LETTERS = "abcdefghijklm"
 
+# Gregorio font ambitus: interval 1..5 maps to suffix "One".."Five".
+_MAX_AMBITUS = 5
+_MIN_AMBITUS = 1
+
 
 @dataclass
 class StaffDisplay:
@@ -49,9 +53,13 @@ class GabcStaff:
             elif isinstance(el, Syllable):
                 pitches = self._notes_to_pitch_indices(el.notes)
                 neumes = [
-                    {"shape": shape, "pitches": pits}
-                    for pits, shape in self._notes_to_neume_groups(el.notes)
+                    {"shape": shape, "pitches": pits, "intervals": intervals}
+                    for pits, shape, intervals in self._notes_to_neume_groups(el.notes)
                 ]
+                # #region agent debug
+                #for n in neumes:
+                #    print(f"[gabc] syllable={el.text!r} shape={n['shape']} pitches={n['pitches']} intervals={n.get('intervals')}")
+                # #endregion
                 elements.append({
                     "type": "syllable",
                     "text": el.text,
@@ -100,11 +108,11 @@ class GabcStaff:
                 result.append(_PITCH_LETTERS.index(lower))
         return result
 
-    def _notes_to_neume_groups(self, notes: str) -> list[tuple[list[int], str]]:
+    def _notes_to_neume_groups(self, notes: str) -> list[tuple[list[int], str, list[int]]]:
         """
-        Split GABC notes into neume groups (each group: list of pitch indices, shape name).
+        Split GABC notes into neume groups (each group: list of pitch indices, shape name, intervals).
         GABC: "/" separates neumes; "/0" and "/!" are part of the same neume.
-        Returns list of (pitches, shape) for use with the Neumes class.
+        Returns list of (pitches, shape, intervals) for use with the Neumes class.
         """
         if not notes or not notes.strip():
             return []
@@ -128,14 +136,34 @@ class GabcStaff:
         if current:
             groups.append("".join(current))
 
-        out: list[tuple[list[int], str]] = []
+        out: list[tuple[list[int], str, list[int]]] = []
         for g in groups:
             pitches = [_PITCH_LETTERS.index(c) for c in g.lower() if c in _PITCH_LETTERS]
             if not pitches:
                 continue
             shape = self._infer_neume_shape(g, pitches)
-            out.append((pitches, shape))
+            intervals = self._intervals_from_pitches(pitches, shape)
+            out.append((pitches, shape, intervals))
         return out
+
+    def _intervals_from_pitches(self, pitches: list[int], shape: str) -> list[int]:
+        """
+        Compute ambitus intervals (1..5) from consecutive pitch steps for font glyph lookup.
+        Returns one interval for 2-note neumes, two for 3+-note (first two steps); empty for 1-note.
+        """
+        n = len(pitches)
+        if n < 2:
+            return []
+        raw: list[int] = []
+        if n == 2:
+            raw.append(abs(pitches[1] - pitches[0]))
+        else:
+            raw.append(abs(pitches[1] - pitches[0]))
+            raw.append(abs(pitches[2] - pitches[1]))
+        return [
+            max(_MIN_AMBITUS, min(_MAX_AMBITUS, r)) if r > 0 else _MIN_AMBITUS
+            for r in raw
+        ]
 
     def _infer_neume_shape(self, group_str: str, pitches: list[int]) -> str:
         """Infer logical neume shape from pitch contour and GABC modifiers."""
