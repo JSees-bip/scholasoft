@@ -1,0 +1,6 @@
+# GABC editor – install with: pip install -r requirements.txt
+#
+# Current: gabc_parser.py uses only the standard library (no pip deps).
+# PyQt6 is for the planned GUI (preview, export PDF/PNG).
+
+PyQt6>=6.4
