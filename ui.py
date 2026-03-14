@@ -7,6 +7,8 @@ import PyQt6.QtWidgets as QtWidgets
 import PyQt6.QtCore as QtCore
 import PyQt6.QtGui as QtGui
 
+from symbols import Clefs, Neumes
+
 
 # Vertical grid: 13 slots for pitches a-m (0-12). Staff lines sit on slots 2,4,6,8 (4-line staff).
 # Clef c3 means pitch c (index 2) is on line 3 (slot 6), so slot = pitch + 4.
@@ -20,9 +22,11 @@ class StaffWidget(QtWidgets.QWidget):
     Notes are aligned to a fixed grid so neumes sit on lines or in spaces.
     """
 
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, clefs=None, neumes=None):
         super().__init__(parent)
         self._display = None
+        self._clefs = clefs if clefs is not None else Clefs()
+        self._neumes = neumes if neumes is not None else Neumes()
         self.setMinimumSize(400, 200)
         self.setSizePolicy(
             QtWidgets.QSizePolicy.Policy.Expanding,
@@ -145,9 +149,19 @@ class StaffWidget(QtWidgets.QWidget):
         for el in elements:
             kind = el.get("type", "")
             if kind == "clef":
-                painter.setPen(QtCore.Qt.GlobalColor.black)
+                clef_value = el.get("value", "c3")
                 mid_y = (y_top + y_bottom) / 2
-                painter.drawText(int(x), int(mid_y), el.get("value", "c3"))
+                dest_w = self._clefs.TILE_WIDTH
+                dest_h = self._clefs.TILE_HEIGHT
+                dest_rect = QtCore.QRect(
+                    int(x),
+                    int(mid_y - dest_h / 2),
+                    dest_w,
+                    dest_h,
+                )
+                if not self._clefs.draw(painter, dest_rect, clef_value):
+                    painter.setPen(QtCore.Qt.GlobalColor.black)
+                    painter.drawText(int(x), int(mid_y), clef_value)
                 x += 40
             elif kind == "bar":
                 pen = QtGui.QPen(QtCore.Qt.GlobalColor.black, 2)
@@ -185,12 +199,14 @@ class MainWindow(QtWidgets.QMainWindow):
 
     file_open_requested = QtCore.pyqtSignal()
 
-    def __init__(self):
+    def __init__(self, clefs=None, neumes=None):
         super().__init__()
         self.setWindowTitle("Scholasoft")
         self.setMinimumSize(400, 300)
         self.resize(600, 400)
 
+        self._clefs = clefs
+        self._neumes = neumes
         # Verbose: show raw parsed text when True, staff plot when False.
         self._verbose = False
         self._display_model = None
@@ -238,7 +254,7 @@ class MainWindow(QtWidgets.QMainWindow):
         layout = QtWidgets.QVBoxLayout(central)
 
         self._stack = QtWidgets.QStackedWidget()
-        self._staff_widget = StaffWidget()
+        self._staff_widget = StaffWidget(clefs=self._clefs, neumes=self._neumes)
         self._staff_scroll = QtWidgets.QScrollArea()
         self._staff_scroll.setWidget(self._staff_widget)
         self._staff_scroll.setWidgetResizable(True)

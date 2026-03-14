@@ -11,6 +11,7 @@ from PyQt6.QtWidgets import QApplication, QFileDialog, QMessageBox
 
 from gabc_parser import GabcParser, GabcDocument, Clef, Bar, Syllable
 from gabc_staff import GabcStaff
+from symbols import Clefs, Neumes
 from ui import MainWindow
 
 
@@ -35,7 +36,9 @@ def format_parsed_document(doc: GabcDocument) -> str:
 
 def main():
     app = QApplication(sys.argv)
-    window = MainWindow()
+    clefs = Clefs()
+    neumes = Neumes()
+    window = MainWindow(clefs=clefs, neumes=neumes)
     parser = GabcParser()
     staff = GabcStaff()
 
