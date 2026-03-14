@@ -10,6 +10,7 @@ from PyQt6.QtCore import QStandardPaths
 from PyQt6.QtWidgets import QApplication, QFileDialog, QMessageBox
 
 from gabc_parser import GabcParser, GabcDocument, Clef, Bar, Syllable
+from gabc_staff import GabcStaff
 from ui import MainWindow
 
 
@@ -36,6 +37,7 @@ def main():
     app = QApplication(sys.argv)
     window = MainWindow()
     parser = GabcParser()
+    staff = GabcStaff()
 
     # Pending requests from the UI; the loop processes these each iteration.
     # Signal handlers only append to this list; all real logic runs in the loop.
@@ -45,7 +47,7 @@ def main():
         pending_requests.append("open")
 
     window.file_open_requested.connect(on_file_open_requested)
-    window.show()
+    window.showMaximized()
 
     try:
         while window.isVisible():
@@ -68,8 +70,11 @@ def main():
                         continue
                     try:
                         doc = parser.parse_file(path)
-                        text = f"Opened: {path}\n\n{format_parsed_document(doc)}"
-                        window.set_display_text(text)
+                        display = staff.build_display(doc)
+                        window.set_display_model(display)
+                        if window.verbose:
+                            text = f"Opened: {path}\n\n{format_parsed_document(doc)}"
+                            window.set_display_text(text)
                     except FileNotFoundError:
                         QMessageBox.warning(
                             window, "Open failed", f"File not found: {path}"
