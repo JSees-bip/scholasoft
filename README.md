@@ -2,6 +2,8 @@
 
 A simple tool for editing GABC (Gregorian chant notation) files: import, edit, and export sheet music. The parser and CLI are in place; a graphical editor is planned.
 
+Full disclosure: I am using cursor AI assitance in developing this project for both research help and some code generation. 
+
 ---
 
 ## Using `gabc_parser.py` (CLI)

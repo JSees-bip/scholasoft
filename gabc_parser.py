@@ -211,6 +211,7 @@ class GabcParser:
             token_start = i
 
             if body_text[i] == "(":
+                # Standalone (clef) or (bar), or notes for syllable we haven't seen yet
                 content, end = self._read_balanced_parens(body_text, i)
                 syllable_text = body_text[token_start:i].strip()
 
@@ -228,6 +229,7 @@ class GabcParser:
                 token_start = end
                 continue
 
+            # Syllable text before '(': advance until we find the opening paren
             while i < len(body_text) and body_text[i] != "(":
                 i += 1
             if i >= len(body_text):
@@ -235,6 +237,23 @@ class GabcParser:
                 if trailing:
                     elements.append(Syllable(trailing, ""))
                 break
+
+            # We're at '('; process it in this iteration so token_start still points at syllable text
+            content, end = self._read_balanced_parens(body_text, i)
+            syllable_text = body_text[token_start:i].strip()
+
+            if self._is_clef(content):
+                if syllable_text:
+                    elements.append(Syllable(syllable_text, ""))
+                elements.append(Clef(content))
+            elif self._is_bar(content):
+                if syllable_text:
+                    elements.append(Syllable(syllable_text, ""))
+                elements.append(Bar(content))
+            else:
+                elements.append(Syllable(syllable_text, content))
+            i = end
+            token_start = end
 
         return elements
 
