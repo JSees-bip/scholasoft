@@ -2,5 +2,7 @@
 #
 # Current: gabc_parser.py uses only the standard library (no pip deps).
 # PyQt6 is for the planned GUI (preview, export PDF/PNG).
+# fonttools is used to read Gregorio TTF glyph names and build name→Unicode mapping.
 
 PyQt6>=6.4
+fonttools>=4.0

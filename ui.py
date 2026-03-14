@@ -10,10 +10,16 @@ import PyQt6.QtGui as QtGui
 from symbols import Clefs, Neumes
 
 
-# Vertical grid: 13 slots for pitches a-m (0-12). Staff lines sit on slots 2,4,6,8 (4-line staff).
-# Clef c3 means pitch c (index 2) is on line 3 (slot 6), so slot = pitch + 4.
-NUM_PITCH_SLOTS = 13
-STAFF_LINE_SLOTS = (2, 4, 6, 8)  # 4-line staff: lines at these slot indices (0 = bottom)
+# Vertical grid: more slots = smaller slot_height = staff lines closer together.
+NUM_PITCH_SLOTS = 27
+# Top staff line at this slot; staff centered in window. 4 lines -> slots (12,14,16,18).
+STAFF_TOP_SLOT = 18
+# Nudge clef up so the C hole sits on the line (font glyph center vs visual center).
+CLEF_NUDGE_UP_PX = 18
+# Nudge font-rendered neumes up so they center like the fallback dots (font glyph vs visual center).
+NEUME_NUDGE_UP_PX = 32
+# Shift neumes down so they sit on the staff (reference: aveverum.svg has neumes in staff range).
+NEUME_SLOT_OFFSET = -7
 
 
 class StaffWidget(QtWidgets.QWidget):
@@ -47,21 +53,37 @@ class StaffWidget(QtWidgets.QWidget):
         """Return (width, height) needed to draw all elements for scrolling."""
         if not self._display:
             return (400, 200)
+        staff_height = 180
+        slot_height = staff_height / NUM_PITCH_SLOTS
+        # Fixed staff span (same as draw) so staff is always centered
+        line_count = max(2, min(5, int(getattr(self._display, "staff_line_count", 4))))
+        staff_span_slots = max(2, 2 * (line_count - 1))
+        staff_span_px = staff_span_slots * slot_height
+        neume_size = max(40, int(staff_span_px * 0.65))
+        clef_height = max(40, int(staff_span_px * 1.1))
+        clef_width = max(32, int(clef_height * 0.5)) + 8
         elements = getattr(self._display, "elements", [])
         x = 50
         for el in elements:
             kind = el.get("type", "")
             if kind == "clef":
-                x += 40
+                x += clef_width
             elif kind == "bar":
                 x += 20
             elif kind == "syllable":
+                neumes = el.get("neumes", [])
                 pitches = el.get("pitches", [])
                 text = el.get("text", "")
-                x += max(14 * len(pitches), 8 * len(text)) if (pitches or text) else 12
+                if neumes:
+                    x += neume_size * len(neumes)
+                elif pitches or text:
+                    x += max(14 * len(pitches), 8 * len(text))
+                else:
+                    x += 12
                 x += 12
-        staff_height = 180
-        text_space = 30
+        # Room for 28px + 1.5 staff spaces + lyrics line height
+        slot_h = staff_height / NUM_PITCH_SLOTS
+        text_space = 28 + int(1.5 * 2 * slot_h) + 24
         return (int(x) + 40, int(staff_height + text_space + 40))
 
     def paintEvent(self, event):
@@ -97,25 +119,32 @@ class StaffWidget(QtWidgets.QWidget):
             "Use File > Open... to load a .gabc file.",
         )
 
+    def _staff_line_slots(self) -> tuple[int, ...]:
+        """
+        Fixed staff line slots so the staff is always in the middle of the window.
+        Top line = STAFF_TOP_SLOT; lines spaced by 2 slots (so spaces are at line_slot ± 1).
+        """
+        count = 4
+        if self._display:
+            count = getattr(self._display, "staff_line_count", 4)
+            count = max(2, min(5, int(count)))
+        return tuple(STAFF_TOP_SLOT - 2 * (count - 1 - i) for i in range(count))
+
     def _draw_staff(self, painter: QtGui.QPainter, rect: QtCore.QRect):
-        """Draw staff lines on a fixed grid so neumes align with lines/spaces."""
+        """Draw staff lines at fixed slots so the staff is always centered in the window."""
         slot_height = rect.height() / NUM_PITCH_SLOTS
-        # Slot 0 at bottom, slot 12 at top
         def slot_to_y(slot: int) -> float:
             return rect.bottom() - (slot + 0.5) * slot_height
 
         pen = QtGui.QPen(QtCore.Qt.GlobalColor.black, 1)
         painter.setPen(pen)
-        for slot in STAFF_LINE_SLOTS:
+        for slot in self._staff_line_slots():
             y = slot_to_y(slot)
             painter.drawLine(rect.left(), int(y), rect.right(), int(y))
 
-    def _pitch_to_slot(self, pitch: int, pitch_center: float | None = None) -> int:
-        """Map pitch index (0-12) to vertical slot. Staff is centered on pitch_center so neumes align with lines."""
-        if pitch_center is None:
-            pitch_center = 5.0  # default: center staff on middle of range
-        # Middle of staff (slot 6) = pitch_center; slot 0 at bottom, 12 at top
-        slot = 6 + (pitch - pitch_center)
+    def _pitch_to_slot(self, pitch: int, clef_pitch: int = 2) -> int:
+        """Map pitch index (0-12) to vertical slot. One slot per pitch so notes sit on lines or in spaces."""
+        slot = STAFF_TOP_SLOT + NEUME_SLOT_OFFSET + (pitch - clef_pitch)
         return min(max(int(round(slot)), 0), NUM_PITCH_SLOTS - 1)
 
     def _pitch_range_from_display(self) -> tuple[float, float]:
@@ -130,39 +159,49 @@ class StaffWidget(QtWidgets.QWidget):
         return (float(min(pits)), float(max(pits)))
 
     def _draw_elements(self, painter: QtGui.QPainter, rect: QtCore.QRect):
-        """Draw clef, bars, and syllables; neumes snap to staff grid."""
+        """Draw clef, bars, and syllables. All positions referenced to clef; staff fixed in center."""
         elements = getattr(self._display, "elements", [])
         slot_height = rect.height() / NUM_PITCH_SLOTS
-        min_p, max_p = self._pitch_range_from_display()
-        pitch_center = (min_p + max_p) / 2.0
+        clef_pitch = getattr(self._display, "clef_pitch", 2) if self._display else 2
+        staff_slots = self._staff_line_slots()
+        # Scale glyphs to fixed staff span (staff always same size in center)
+        staff_span_slots = max(2, (staff_slots[-1] - staff_slots[0]) if staff_slots else 2)
+        staff_span_px = staff_span_slots * slot_height
+        neume_height = max(40, int(staff_span_px * 0.65))
+        clef_height = max(40, int(staff_span_px * 1.1))
 
         def slot_to_y(slot: int) -> float:
             return rect.bottom() - (slot + 0.5) * slot_height
 
         def pitch_to_y(pitch: int) -> float:
-            return slot_to_y(self._pitch_to_slot(pitch, pitch_center))
+            """Vertical center y for a pitch; same for font neumes and fallback dots."""
+            return slot_to_y(self._pitch_to_slot(pitch, clef_pitch))
 
-        y_top = slot_to_y(STAFF_LINE_SLOTS[-1])
-        y_bottom = slot_to_y(STAFF_LINE_SLOTS[0])
+        y_top = slot_to_y(staff_slots[-1])
+        y_bottom = slot_to_y(staff_slots[0])
 
         x = rect.left() + 30
+        saved_font = painter.font()
         for el in elements:
             kind = el.get("type", "")
             if kind == "clef":
                 clef_value = el.get("value", "c3")
-                mid_y = (y_top + y_bottom) / 2
-                dest_w = self._clefs.TILE_WIDTH
-                dest_h = self._clefs.TILE_HEIGHT
+                # Clef on top staff line; nudge up a few px so the C hole sits on the line.
+                top_line_y = slot_to_y(staff_slots[-1])
+                clef_center_y = top_line_y - CLEF_NUDGE_UP_PX
+                dest_w = max(32, int(clef_height * 0.5))
+                dest_h = clef_height
                 dest_rect = QtCore.QRect(
                     int(x),
-                    int(mid_y - dest_h / 2),
+                    int(clef_center_y - dest_h / 2),
                     dest_w,
                     dest_h,
                 )
                 if not self._clefs.draw(painter, dest_rect, clef_value):
                     painter.setPen(QtCore.Qt.GlobalColor.black)
-                    painter.drawText(int(x), int(mid_y), clef_value)
-                x += 40
+                    painter.drawText(int(x), int(clef_center_y), clef_value)
+                painter.setFont(saved_font)
+                x += dest_w + 8
             elif kind == "bar":
                 pen = QtGui.QPen(QtCore.Qt.GlobalColor.black, 2)
                 painter.setPen(pen)
@@ -171,21 +210,64 @@ class StaffWidget(QtWidgets.QWidget):
             elif kind == "syllable":
                 text = el.get("text", "")
                 pitches = el.get("pitches", [])
+                neumes = el.get("neumes", [])
                 note_radius = 4
                 syllable_x = x
-                for p in pitches:
-                    py = pitch_to_y(p)
-                    painter.setBrush(QtCore.Qt.GlobalColor.black)
-                    painter.setPen(QtCore.Qt.GlobalColor.black)
-                    painter.drawEllipse(
-                        int(x - note_radius), int(py - note_radius),
-                        note_radius * 2, note_radius * 2,
-                    )
-                    x += 14
+                if neumes:
+                    for neume in neumes:
+                        shape = neume.get("shape", "punctum")
+                        pits = neume.get("pitches", [])
+                        if not pits:
+                            continue
+                        first_pitch_y = pitch_to_y(pits[0])
+                        nw = neume_height
+                        nh = neume_height
+                        # Apply nudge so font glyph centers like fallback dots.
+                        center_y = first_pitch_y - NEUME_NUDGE_UP_PX
+                        dest_rect = QtCore.QRect(
+                            int(x),
+                            int(center_y - nh / 2),
+                            nw,
+                            nh,
+                        )
+                        if self._neumes.draw(painter, dest_rect, shape):
+                            x += nw
+                        else:
+                            for p in pits:
+                                py = pitch_to_y(p)
+                                painter.setBrush(QtCore.Qt.GlobalColor.black)
+                                painter.setPen(QtCore.Qt.GlobalColor.black)
+                                painter.drawEllipse(
+                                    int(x - note_radius), int(py - note_radius),
+                                    note_radius * 2, note_radius * 2,
+                                )
+                                x += 14
+                        painter.setFont(saved_font)
+                else:
+                    for p in pitches:
+                        py = pitch_to_y(p)
+                        painter.setBrush(QtCore.Qt.GlobalColor.black)
+                        painter.setPen(QtCore.Qt.GlobalColor.black)
+                        painter.drawEllipse(
+                            int(x - note_radius), int(py - note_radius),
+                            note_radius * 2, note_radius * 2,
+                        )
+                        x += 14
+                syllable_width = x - syllable_x
                 if text:
                     painter.setPen(QtCore.Qt.GlobalColor.black)
-                    text_y = y_bottom + 18
-                    painter.drawText(int(syllable_x), int(text_y), text)
+                    lyrics_font = painter.font()
+                    lyrics_font.setPointSize(max(lyrics_font.pointSize(), 14))
+                    painter.setFont(lyrics_font)
+                    # One and a half staff spaces below the bottom staff line
+                    staff_space = 2 * slot_height
+                    text_y = y_bottom + 28 + 1.5 * staff_space
+                    text_center_x = syllable_x + syllable_width / 2
+                    metrics = QtGui.QFontMetrics(lyrics_font)
+                    text_width = metrics.horizontalAdvance(text)
+                    text_x = text_center_x - text_width / 2
+                    painter.drawText(int(text_x), int(text_y), text)
+                    painter.setFont(saved_font)
                 if not pitches and text:
                     x += 8 * len(text)
                 x += 12

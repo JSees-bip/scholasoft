@@ -1,74 +1,128 @@
 """
-Tile-set definitions for Gregorian chant notation.
-Loads symbol_set.png (neumes) and clef_set.png (clefs) from .symbols/,
-defines grid layout and mappings so the UI can draw tiles when displaying music.
+Gregorian chant symbols using the Gregorio-project font (greciliae).
+Reads the TTF from lib/gregorio-project/fonts/ (read-only), builds a
+glyph-name→Unicode mapping with fontTools, and draws clefs/neumes via QFont.
+Falls back to UI text/circles when the font is missing or a glyph is unknown.
 """
 
 from __future__ import annotations
 
 import os
-from typing import Tuple
+from PyQt6.QtCore import Qt, QRect
+from PyQt6.QtGui import QFont, QFontDatabase, QPainter
 
-from PyQt6.QtCore import QRect
-from PyQt6.QtGui import QImage, QPainter
+# Cache glyph name → Unicode for a given TTF path (avoid re-parsing).
+_glyph_cache: dict[str, dict[str, int]] = {}
+
+# Shared Gregorio font load (family name and name→unicode map). Loaded once.
+_gregorio_load_attempted = False
+_gregorio_font_family: str | None = None
+_gregorio_name_to_unicode: dict[str, int] = {}
 
 
-def _symbols_dir() -> str:
-    """Directory containing .symbols (sibling to this file)."""
-    return os.path.join(os.path.dirname(os.path.abspath(__file__)), ".symbols")
+def _gregorio_font_path() -> str:
+    """
+    Path to greciliae.ttf. Prefer .symbols/greciliae.ttf (build output);
+    else lib/gregorio-project/fonts/greciliae.ttf (read-only).
+    """
+    project_root = os.path.dirname(os.path.abspath(__file__))
+    in_symbols = os.path.join(project_root, ".symbols", "greciliae.ttf")
+    if os.path.isfile(in_symbols):
+        return in_symbols
+    return os.path.join(project_root, "lib", "gregorio-project", "fonts", "greciliae.ttf")
+
+
+def _glyph_name_to_unicode_map(ttf_path: str) -> dict[str, int]:
+    """
+    Build glyph name → Unicode scalar from the TTF using fontTools.
+    Cached per path. Returns empty dict if file missing or on error.
+    """
+    if ttf_path in _glyph_cache:
+        return _glyph_cache[ttf_path]
+    if not os.path.isfile(ttf_path):
+        _glyph_cache[ttf_path] = {}
+        return {}
+    try:
+        from fontTools.ttLib import TTFont
+
+        font = TTFont(ttf_path)
+        cmap = font.getBestCmap()
+        font.close()
+        # cmap: unicode (int) → glyph name (str)
+        name_to_unicode = {name: code for code, name in (cmap or {}).items()}
+        _glyph_cache[ttf_path] = name_to_unicode
+        return name_to_unicode
+    except Exception:
+        _glyph_cache[ttf_path] = {}
+        return {}
+
+
+def _load_gregorio_font_once() -> tuple[str | None, dict[str, int]]:
+    """Load greciliae once; return (font family name, glyph name→unicode map)."""
+    global _gregorio_load_attempted, _gregorio_font_family, _gregorio_name_to_unicode
+    if _gregorio_load_attempted:
+        return _gregorio_font_family, _gregorio_name_to_unicode
+    _gregorio_load_attempted = True
+    path = _gregorio_font_path()
+    if not os.path.isfile(path):
+        return None, {}
+    _gregorio_name_to_unicode = _glyph_name_to_unicode_map(path)
+    if not _gregorio_name_to_unicode:
+        return None, {}
+    font_id = QFontDatabase.addApplicationFont(path)
+    if font_id >= 0:
+        families = QFontDatabase.applicationFontFamilies(font_id)
+        if families:
+            _gregorio_font_family = families[0]
+    return _gregorio_font_family, _gregorio_name_to_unicode
+
+
+# GABC clef value → Gregorio glyph name (from gregoriotex-chars.tex).
+CLEF_VALUE_TO_GLYPH: dict[str, str] = {
+    "c2": "CClef",
+    "c3": "CClef",
+    "c4": "CClef",
+    "cb2": "CClefChange",
+    "cb3": "CClefChange",
+    "cb4": "CClefChange",
+    "f3": "FClef",
+    "f4": "FClef",
+    "f5": "FClef",
+    "fb3": "FClefChange",
+    "fb4": "FClefChange",
+}
+
+# Logical neume name → Gregorio glyph name (basic set; names from gregorio squarize).
+NEUME_NAME_TO_GLYPH: dict[str, str] = {
+    "punctum": "Punctum",
+    "virga": "Virga",
+    "podatus": "PesQuadratumLongqueue",
+    "clivis": "Flexus",
+    "torculus": "Torculus",
+    "porrectus": "Porrectus",
+    "climacus": "Climacus",
+    "bistropha": "Stropha",
+    "tristropha": "Stropha",
+    "pressus": "Stropha",
+    "quilisma": "Quilisma",
+    "scandicus": "Scandicus",
+    "salicus": "Salicus",
+    "liquescent": "DescendensPunctumInclinatum",
+}
 
 
 class Clefs:
     """
-    Clef tile set from clef_set.png.
-    Grid and mapping from clef value (e.g. 'c3', 'f4') to (col, row).
+    Clef rendering using the Gregorio greciliae font.
+    Maps GABC clef values (e.g. 'c3', 'f4') to font glyphs and draws with QFont.
     """
 
-    # Tile dimensions in the sprite sheet (adjust if your image layout differs)
+    # Nominal draw size for layout (UI uses these for dest_rect).
     TILE_WIDTH = 40
     TILE_HEIGHT = 80
 
-    # Clef value -> (column, row) in the grid. Extend for your clef_set.png layout.
-    GRID: dict[str, Tuple[int, int]] = {
-        "c2": (0, 0),
-        "c3": (1, 0),
-        "c4": (2, 0),
-        "cb2": (3, 0),
-        "cb3": (4, 0),
-        "cb4": (5, 0),
-        "f3": (0, 1),
-        "f4": (1, 1),
-        "f5": (2, 1),
-        "fb3": (3, 1),
-        "fb4": (4, 1),
-    }
-
     def __init__(self) -> None:
-        path = os.path.join(_symbols_dir(), "clef_set.png")
-        self._image: QImage | None = QImage(path) if os.path.isfile(path) else None
-
-    @property
-    def image(self) -> QImage | None:
-        """Loaded clef sprite sheet, or None if file missing."""
-        return self._image
-
-    def get_source_rect(self, clef_value: str) -> QRect | None:
-        """
-        Source rectangle in the tile set for the given clef (e.g. 'c3', 'f4').
-        Returns None if clef is unknown or image not loaded.
-        """
-        if self._image is None:
-            return None
-        key = (clef_value or "c3").strip().lower()
-        if key not in self.GRID:
-            key = "c3"
-        col, row = self.GRID[key]
-        return QRect(
-            col * self.TILE_WIDTH,
-            row * self.TILE_HEIGHT,
-            self.TILE_WIDTH,
-            self.TILE_HEIGHT,
-        )
+        self._family, self._name_to_unicode = _load_gregorio_font_once()
 
     def draw(
         self,
@@ -77,70 +131,40 @@ class Clefs:
         clef_value: str,
     ) -> bool:
         """
-        Draw the clef tile for clef_value into dest_rect.
+        Draw the clef glyph for clef_value into dest_rect.
         Returns True if drawn, False if fallback should be used (e.g. text).
         """
-        src = self.get_source_rect(clef_value)
-        if src is None or self._image is None:
+        if self._family is None or not self._name_to_unicode:
             return False
-        painter.drawImage(dest_rect, self._image, src)
+        key = (clef_value or "c3").strip().lower()
+        glyph_name = CLEF_VALUE_TO_GLYPH.get(key, CLEF_VALUE_TO_GLYPH.get("c3", "CClef"))
+        codepoint = self._name_to_unicode.get(glyph_name)
+        if codepoint is None:
+            return False
+        font = QFont(self._family)
+        font.setPixelSize(max(dest_rect.height(), 1))
+        painter.setFont(font)
+        painter.setPen(Qt.GlobalColor.black)
+        painter.drawText(
+            dest_rect,
+            Qt.AlignmentFlag.AlignCenter | Qt.AlignmentFlag.AlignVCenter,
+            chr(codepoint),
+        )
         return True
 
 
 class Neumes:
     """
-    Neume tile set from symbol_set.png.
-    Grid and mapping from neume name to (col, row) for the 14 standard neumes.
+    Neume rendering using the Gregorio greciliae font.
+    Maps logical neume names to font glyph names and draws with QFont.
     """
 
-    # Tile dimensions in the sprite sheet (adjust if your image layout differs)
+    # Nominal draw size for layout.
     TILE_WIDTH = 48
     TILE_HEIGHT = 48
 
-    # Neume name -> (column, row). Order matches typical symbol_set layout (e.g. 2 columns).
-    GRID: dict[str, Tuple[int, int]] = {
-        "punctum": (0, 0),
-        "virga": (1, 0),
-        "podatus": (0, 1),
-        "clivis": (1, 1),
-        "torculus": (0, 2),
-        "porrectus": (1, 2),
-        "climacus": (0, 3),
-        "bistropha": (1, 3),
-        "tristropha": (0, 4),
-        "pressus": (1, 4),
-        "quilisma": (0, 5),
-        "scandicus": (1, 5),
-        "salicus": (0, 6),
-        "liquescent": (1, 6),
-    }
-
     def __init__(self) -> None:
-        path = os.path.join(_symbols_dir(), "symbol_set.png")
-        self._image: QImage | None = QImage(path) if os.path.isfile(path) else None
-
-    @property
-    def image(self) -> QImage | None:
-        """Loaded neume sprite sheet, or None if file missing."""
-        return self._image
-
-    def get_source_rect(self, neume_name: str) -> QRect | None:
-        """
-        Source rectangle in the tile set for the given neume (e.g. 'podatus', 'clivis').
-        Returns None if neume is unknown or image not loaded.
-        """
-        if self._image is None:
-            return None
-        key = (neume_name or "punctum").strip().lower()
-        if key not in self.GRID:
-            return None
-        col, row = self.GRID[key]
-        return QRect(
-            col * self.TILE_WIDTH,
-            row * self.TILE_HEIGHT,
-            self.TILE_WIDTH,
-            self.TILE_HEIGHT,
-        )
+        self._family, self._name_to_unicode = _load_gregorio_font_once()
 
     def draw(
         self,
@@ -149,11 +173,25 @@ class Neumes:
         neume_name: str,
     ) -> bool:
         """
-        Draw the neume tile for neume_name into dest_rect.
+        Draw the neume glyph for neume_name into dest_rect.
         Returns True if drawn, False if fallback should be used.
         """
-        src = self.get_source_rect(neume_name)
-        if src is None or self._image is None:
+        if self._family is None or not self._name_to_unicode:
             return False
-        painter.drawImage(dest_rect, self._image, src)
+        key = (neume_name or "punctum").strip().lower()
+        glyph_name = NEUME_NAME_TO_GLYPH.get(key)
+        if glyph_name is None:
+            return False
+        codepoint = self._name_to_unicode.get(glyph_name)
+        if codepoint is None:
+            return False
+        font = QFont(self._family)
+        font.setPixelSize(max(dest_rect.height(), 1))
+        painter.setFont(font)
+        painter.setPen(Qt.GlobalColor.black)
+        painter.drawText(
+            dest_rect,
+            Qt.AlignmentFlag.AlignCenter | Qt.AlignmentFlag.AlignVCenter,
+            chr(codepoint),
+        )
         return True

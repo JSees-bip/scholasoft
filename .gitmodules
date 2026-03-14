@@ -1,6 +1,3 @@
-[submodule "lib"]
-	path = lib/gregorio-project/gregorio
-	url = https://github.com/gregorio-project/gregorio.git
 [submodule "lib/gregorio-project"]
 	path = lib/gregorio-project
 	url = https://github.com/gregorio-project/gregorio.git
