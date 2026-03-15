@@ -19,7 +19,6 @@ _gregorio_load_attempted = False
 _gregorio_font_family: str | None = None
 _gregorio_name_to_unicode: dict[str, int] = {}
 
-
 def _gregorio_font_path() -> str:
     """
     Path to greciliae.ttf. Prefer .symbols/greciliae.ttf (build output);
@@ -78,19 +77,21 @@ def _load_gregorio_font_once() -> tuple[str | None, dict[str, int]]:
 
 
 # GABC clef value → Gregorio glyph name (from gregoriotex-chars.tex).
+# Flatted clefs (cb*, fb*) use normal clef + Flat glyph so the accidental looks correct.
 CLEF_VALUE_TO_GLYPH: dict[str, str] = {
     "c2": "CClef",
     "c3": "CClef",
     "c4": "CClef",
-    "cb2": "CClefChange",
-    "cb3": "CClefChange",
-    "cb4": "CClefChange",
+    "cb2": "CClef",
+    "cb3": "CClef",
+    "cb4": "CClef",
     "f3": "FClef",
     "f4": "FClef",
     "f5": "FClef",
-    "fb3": "FClefChange",
-    "fb4": "FClefChange",
+    "fb3": "FClef",
+    "fb4": "FClef",
 }
+FLAT_GLYPH_NAME = "Flat"
 
 # Interval index 1..5 → ambitus suffix (matches squarize AMBITUS).
 AMBITUS_SUFFIX: dict[int, str] = {
@@ -102,6 +103,7 @@ AMBITUS_SUFFIX: dict[int, str] = {
 }
 
 # Logical neume name → Gregorio glyph name (basic set; names from gregorio squarize).
+# For multi-note neumes the font uses ambitus suffixes + "Nothing" (e.g. FlexusOneNothing).
 NEUME_NAME_TO_GLYPH: dict[str, str] = {
     "punctum": "Punctum",
     "virga": "Virga",
@@ -117,6 +119,11 @@ NEUME_NAME_TO_GLYPH: dict[str, str] = {
     "scandicus": "Scandicus",
     "salicus": "Salicus",
     "liquescent": "DescendensPunctumInclinatum",
+}
+
+# Fallback base names when the primary base has no glyph (e.g. greciliae may have PesOneNothing but not PesQuadratumLongqueueOneNothing).
+NEUME_NAME_FALLBACK_BASES: dict[str, list[str]] = {
+    "podatus": ["Pes"],  # try PesOneNothing etc. if PesQuadratumLongqueue not in font
 }
 
 
@@ -141,6 +148,7 @@ class Clefs:
     ) -> bool:
         """
         Draw the clef glyph for clef_value into dest_rect.
+        For flatted clefs (cb*, fb*), draws the normal clef then the proper Flat accidental.
         Returns True if drawn, False if fallback should be used (e.g. text).
         """
         if self._family is None or not self._name_to_unicode:
@@ -154,10 +162,73 @@ class Clefs:
         font.setPixelSize(max(dest_rect.height(), 1))
         painter.setFont(font)
         painter.setPen(Qt.GlobalColor.black)
+        has_flat = key in ("cb2", "cb3", "cb4", "fb3", "fb4")
+        if has_flat:
+            # Split rect: clef in left portion, Flat accidental in right portion
+            w = dest_rect.width()
+            clef_w = max(int(w * 0.6), w - 24)
+            clef_rect = QRect(dest_rect.left(), dest_rect.top(), clef_w, dest_rect.height())
+            flat_rect = QRect(dest_rect.left() + clef_w, dest_rect.top(), w - clef_w, dest_rect.height())
+            painter.drawText(
+                clef_rect,
+                Qt.AlignmentFlag.AlignCenter | Qt.AlignmentFlag.AlignVCenter,
+                chr(codepoint),
+            )
+            flat_cp = self._name_to_unicode.get(FLAT_GLYPH_NAME)
+            if flat_cp is not None:
+                font_flat = QFont(self._family)
+                font_flat.setPixelSize(max(flat_rect.height(), 1))
+            else:
+                flat_cp = 0x266D  # Unicode MUSIC FLAT SIGN ♭
+                font_flat = QFont(painter.font())
+                font_flat.setPixelSize(max(flat_rect.height(), 1))
+            painter.setFont(font_flat)
+            painter.drawText(
+                flat_rect,
+                Qt.AlignmentFlag.AlignCenter | Qt.AlignmentFlag.AlignVCenter,
+                chr(flat_cp),
+            )
+            painter.setFont(font)
+        else:
+            painter.drawText(
+                dest_rect,
+                Qt.AlignmentFlag.AlignCenter | Qt.AlignmentFlag.AlignVCenter,
+                chr(codepoint),
+            )
+        return True
+
+    def draw_flat(
+        self,
+        painter: QPainter,
+        dest_rect: QRect,
+    ) -> bool:
+        """
+        Draw only the flat accidental into dest_rect (for note-level flats).
+        Returns True if drawn.
+        """
+        if self._family is None or not self._name_to_unicode:
+            return False
+        flat_cp = self._name_to_unicode.get(FLAT_GLYPH_NAME)
+        if flat_cp is not None:
+            font = QFont(self._family)
+            font.setPixelSize(max(dest_rect.height(), 1))
+            painter.setFont(font)
+            painter.setPen(Qt.GlobalColor.black)
+            painter.drawText(
+                dest_rect,
+                Qt.AlignmentFlag.AlignCenter | Qt.AlignmentFlag.AlignVCenter,
+                chr(flat_cp),
+            )
+            return True
+        flat_cp = 0x266D  # Unicode MUSIC FLAT SIGN ♭
+        font = QFont(painter.font())
+        font.setPixelSize(max(dest_rect.height(), 1))
+        painter.setFont(font)
+        painter.setPen(Qt.GlobalColor.black)
         painter.drawText(
             dest_rect,
             Qt.AlignmentFlag.AlignCenter | Qt.AlignmentFlag.AlignVCenter,
-            chr(codepoint),
+            chr(flat_cp),
         )
         return True
 
@@ -190,40 +261,69 @@ class Neumes:
         Returns True if drawn, False if fallback should be used.
         """
         if self._family is None or not self._name_to_unicode:
-            #print(f"[symbols.draw] no font/map -> False")
             return False
         key = (neume_name or "punctum").strip().lower()
         if key == "climacus":
-            #print(f"[symbols.draw] shape=climacus (no glyph) -> False")
+            # Gregorio font has no Climacus glyph; UI draws fallback dots.
             return False
+        if key == "compound":
+            # 4+ note group with no single glyph; UI will draw one dot per pitch
+            return False
+        # Bistropha/tristropha: try bare "Stropha" first (font has it; StrophaOneNothing is missing)
+        if key in ("bistropha", "tristropha", "pressus") and self._name_to_unicode.get("Stropha") is not None:
+            codepoint = self._name_to_unicode["Stropha"]
+            font = QFont(self._family)
+            font.setPixelSize(max(dest_rect.height(), 1))
+            painter.setFont(font)
+            painter.setPen(Qt.GlobalColor.black)
+            painter.drawText(
+                dest_rect,
+                Qt.AlignmentFlag.AlignCenter | Qt.AlignmentFlag.AlignVCenter,
+                chr(codepoint),
+            )
+            return True
         base_glyph = NEUME_NAME_TO_GLYPH.get(key)
         if base_glyph is None:
-            #print(f"[symbols.draw] shape={key!r} no base_glyph -> False")
             return False
+        # Build list of base names to try: primary + any fallbacks for this neume type
+        bases_to_try: list[str] = [base_glyph]
+        for fb in NEUME_NAME_FALLBACK_BASES.get(key, []):
+            if fb not in bases_to_try:
+                bases_to_try.append(fb)
         glyph_name: str | None = None
-        candidate_tried: str | None = None
+        candidates_tried: list[str] = []
         if intervals:
             clamped = [
                 max(1, min(5, i)) for i in intervals[:2]
             ]
             suffixes = [AMBITUS_SUFFIX.get(i, "One") for i in clamped]
-            if len(suffixes) == 1:
-                candidate_tried = base_glyph + suffixes[0]
-                if self._name_to_unicode.get(candidate_tried) is not None:
-                    glyph_name = candidate_tried
-                elif self._name_to_unicode.get(candidate_tried + "Nothing") is not None:
-                    glyph_name = candidate_tried + "Nothing"
-            elif len(suffixes) >= 2:
-                candidate_tried = base_glyph + suffixes[0] + suffixes[1]
-                if self._name_to_unicode.get(candidate_tried) is not None:
-                    glyph_name = candidate_tried
-                elif self._name_to_unicode.get(candidate_tried + "Nothing") is not None:
-                    glyph_name = candidate_tried + "Nothing"
+            for base in bases_to_try:
+                if len(suffixes) == 1:
+                    c1 = base + suffixes[0]
+                    c2 = c1 + "Nothing"
+                    candidates_tried.extend([c1, c2])
+                    if self._name_to_unicode.get(c1) is not None:
+                        glyph_name = c1
+                        break
+                    if self._name_to_unicode.get(c2) is not None:
+                        glyph_name = c2
+                        break
+                elif len(suffixes) >= 2:
+                    c1 = base + suffixes[0] + suffixes[1]
+                    c2 = c1 + "Nothing"
+                    candidates_tried.extend([c1, c2])
+                    if self._name_to_unicode.get(c1) is not None:
+                        glyph_name = c1
+                        break
+                    if self._name_to_unicode.get(c2) is not None:
+                        glyph_name = c2
+                        break
         if glyph_name is None:
             glyph_name = base_glyph
+            candidates_tried.append(base_glyph)
         codepoint = self._name_to_unicode.get(glyph_name)
         if codepoint is None:
-            #print(f"[symbols.draw] shape={key} intervals={intervals} base={base_glyph} candidate_tried={candidate_tried} final={glyph_name!r} -> not in font, False")
+            print(f"[symbols] miss shape={key!r} intervals={intervals} tried={candidates_tried}")
             return False
         font = QFont(self._family)
         font.setPixelSize(max(dest_rect.height(), 1))
@@ -233,5 +333,41 @@ class Neumes:
             dest_rect,
             Qt.AlignmentFlag.AlignCenter | Qt.AlignmentFlag.AlignVCenter,
             chr(codepoint),
+        )
+        return True
+
+    def draw_flat(
+        self,
+        painter: QPainter,
+        dest_rect: QRect,
+    ) -> bool:
+        """
+        Draw the flat accidental into dest_rect (e.g. before a neume).
+        Uses the same font as neumes; falls back to Unicode ♭ if the glyph is missing.
+        Returns True if drawn.
+        """
+        if self._family is None or not self._name_to_unicode:
+            return False
+        flat_cp = self._name_to_unicode.get(FLAT_GLYPH_NAME)
+        if flat_cp is not None:
+            font = QFont(self._family)
+            font.setPixelSize(max(dest_rect.height(), 1))
+            painter.setFont(font)
+            painter.setPen(Qt.GlobalColor.black)
+            painter.drawText(
+                dest_rect,
+                Qt.AlignmentFlag.AlignCenter | Qt.AlignmentFlag.AlignVCenter,
+                chr(flat_cp),
+            )
+            return True
+        flat_cp = 0x266D  # Unicode MUSIC FLAT SIGN ♭
+        font = QFont(painter.font())
+        font.setPixelSize(max(dest_rect.height(), 1))
+        painter.setFont(font)
+        painter.setPen(Qt.GlobalColor.black)
+        painter.drawText(
+            dest_rect,
+            Qt.AlignmentFlag.AlignCenter | Qt.AlignmentFlag.AlignVCenter,
+            chr(flat_cp),
         )
         return True

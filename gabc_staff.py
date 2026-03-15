@@ -53,8 +53,8 @@ class GabcStaff:
             elif isinstance(el, Syllable):
                 pitches = self._notes_to_pitch_indices(el.notes)
                 neumes = [
-                    {"shape": shape, "pitches": pits, "intervals": intervals}
-                    for pits, shape, intervals in self._notes_to_neume_groups(el.notes)
+                    {"shape": shape, "pitches": pits, "intervals": intervals, "episema_at": episema_at, "accidental_before": acc_before}
+                    for pits, shape, intervals, episema_at, acc_before in self._notes_to_neume_groups(el.notes)
                 ]
                 # #region agent debug
                 #for n in neumes:
@@ -136,14 +136,42 @@ class GabcStaff:
         if current:
             groups.append("".join(current))
 
-        out: list[tuple[list[int], str, list[int]]] = []
+        out: list[tuple[list[int], str, list[int], list[int], str | None]] = []
         for g in groups:
             pitches = [_PITCH_LETTERS.index(c) for c in g.lower() if c in _PITCH_LETTERS]
             if not pitches:
                 continue
+            # GABC: "_" after a note = horizontal episema (note held longer)
+            episema_at: list[int] = []
+            idx = 0
+            for i, c in enumerate(g.lower()):
+                if c in _PITCH_LETTERS:
+                    if i + 1 < len(g) and g[i + 1] == "_":
+                        episema_at.append(idx)
+                    idx += 1
+            has_flat = "x" in g.lower()
             shape = self._infer_neume_shape(g, pitches)
             intervals = self._intervals_from_pitches(pitches, shape)
-            out.append((pitches, shape, intervals))
+            # GABC "x" = flat. When we have flat + 4 notes [a,a,b,c] descending → flat + climacus (not bistropha+clivis)
+            if has_flat and len(pitches) == 4:
+                a, b, c, d = pitches[0], pitches[1], pitches[2], pitches[3]
+                if a == b and a > c > d:
+                    climacus_pits = [a, c, d]
+                    climacus_episema = [i - 1 for i in episema_at if i >= 1]
+                    out.append((climacus_pits, "climacus", self._intervals_from_pitches(climacus_pits, "climacus"), climacus_episema, "flat"))
+                    continue
+            # Split 4-note compound into two 2-note neumes when contour matches (bistropha + clivis/podatus) so we draw glyphs like Gregorio
+            if shape == "compound" and len(pitches) == 4:
+                a, b, c, d = pitches[0], pitches[1], pitches[2], pitches[3]
+                if a == b and c > d:
+                    out.append(([a, b], "bistropha", self._intervals_from_pitches([a, b], "bistropha"), [i for i in episema_at if i < 2], None))
+                    out.append(([c, d], "clivis", self._intervals_from_pitches([c, d], "clivis"), [i - 2 for i in episema_at if i >= 2], None))
+                    continue
+                if a == b and c < d:
+                    out.append(([a, b], "bistropha", self._intervals_from_pitches([a, b], "bistropha"), [i for i in episema_at if i < 2], None))
+                    out.append(([c, d], "podatus", self._intervals_from_pitches([c, d], "podatus"), [i - 2 for i in episema_at if i >= 2], None))
+                    continue
+            out.append((pitches, shape, intervals, episema_at, "flat" if has_flat else None))
         return out
 
     def _intervals_from_pitches(self, pitches: list[int], shape: str) -> list[int]:
@@ -200,7 +228,8 @@ class GabcStaff:
             if a < b:
                 return "scandicus"
             return "climacus"
-        if n >= 3:
+        # n >= 4: no single glyph; use "compound" so UI draws one dot per pitch (fallback)
+        if n >= 4:
             a, b, c = pitches[0], pitches[1], pitches[2]
             if a < b and b < c:
                 return "scandicus"
@@ -210,4 +239,5 @@ class GabcStaff:
                 return "torculus"
             if a > b and b < c:
                 return "porrectus"
+            return "compound"
         return "punctum"
